@@ -4,6 +4,21 @@ import { generateText, AiConfigError } from "@/lib/ai/generate";
 
 export const runtime = "nodejs";
 
+const PDF_WORKER_URL = "https://cdn.jsdelivr.net/npm/pdf-parse@2.4.5/dist/pdf-parse/web/pdf.worker.mjs";
+// Node's default ESM loader only allows dynamic import() of `file:` and
+// `data:` URLs — not `https:` — so the worker script has to be fetched and
+// inlined as a data URL rather than referenced directly. Cached per warm
+// serverless instance so it's only fetched once.
+let cachedWorkerDataUrl: string | null = null;
+async function getPdfWorkerDataUrl(): Promise<string> {
+  if (cachedWorkerDataUrl) return cachedWorkerDataUrl;
+  const res = await fetch(PDF_WORKER_URL);
+  if (!res.ok) throw new Error(`Couldn't fetch PDF worker script (${res.status}).`);
+  const code = await res.text();
+  cachedWorkerDataUrl = `data:text/javascript;charset=utf-8;base64,${Buffer.from(code).toString("base64")}`;
+  return cachedWorkerDataUrl;
+}
+
 // Below this many characters, the given text is almost certainly just an
 // abstract, not the full paper — extraction quality (esp. key_result) is
 // necessarily limited, so the client surfaces that with a badge.
@@ -121,10 +136,11 @@ async function readInputText(request: Request): Promise<string> {
     // Vercel's serverless bundler doesn't statically detect that dynamic
     // path, so the worker file is missing from the deployed function
     // ("Cannot find module '.../pdf.worker.mjs'") even with the package
-    // marked external. Pointing it at the CDN build sidesteps local file
-    // resolution entirely — safe here since the route already makes
-    // outbound HTTPS calls (Supabase, the AI provider).
-    PDFParse.setWorker("https://cdn.jsdelivr.net/npm/pdf-parse@2.4.5/dist/pdf-parse/web/pdf.worker.mjs");
+    // marked external. A plain https: URL doesn't work either — Node's
+    // default ESM loader only allows dynamic import() of `file:`/`data:`
+    // URLs — so the worker script is fetched once and inlined as a data
+    // URL instead.
+    PDFParse.setWorker(await getPdfWorkerDataUrl());
     const parser = new PDFParse({ data: buffer });
     try {
       const result = await parser.getText();
