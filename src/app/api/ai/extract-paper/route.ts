@@ -117,6 +117,14 @@ async function readInputText(request: Request): Promise<string> {
 
     const buffer = Buffer.from(await file.arrayBuffer());
     const { PDFParse } = await import("pdf-parse");
+    // pdf.js resolves its worker script by a relative file path at runtime.
+    // Vercel's serverless bundler doesn't statically detect that dynamic
+    // path, so the worker file is missing from the deployed function
+    // ("Cannot find module '.../pdf.worker.mjs'") even with the package
+    // marked external. Pointing it at the CDN build sidesteps local file
+    // resolution entirely — safe here since the route already makes
+    // outbound HTTPS calls (Supabase, the AI provider).
+    PDFParse.setWorker("https://cdn.jsdelivr.net/npm/pdf-parse@2.4.5/dist/pdf-parse/web/pdf.worker.mjs");
     const parser = new PDFParse({ data: buffer });
     try {
       const result = await parser.getText();
