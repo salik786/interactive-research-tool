@@ -1,26 +1,95 @@
 @import "tailwindcss";
+@import "tw-animate-css";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  --bg: #F7F8FC;
+  --surface: #FFFFFF;
+  --surface-alt: #EEF0F7;
+  --text-primary: #1A1D29;
+  --text-secondary: #5B5F73;
+  --border: #E1E4ED;
+  --primary: #5457E5;
+  --primary-hover: #4143C7;
+  --accent: #FF6B4A;
+  --success: #16A34A;
+  --warning: #F59E0B;
+  --danger: #E23D3D;
+
+  --radius: 0.75rem;
+}
+
+.dark {
+  --bg: #12141C;
+  --surface: #1A1D29;
+  --surface-alt: #232634;
+  --text-primary: #F2F3F8;
+  --text-secondary: #A0A4B8;
+  --border: #2E3140;
+  --primary: #7A7DFF;
+  --primary-hover: #9294FF;
+  --accent: #FF8B6E;
+  --success: #22C55E;
+  --warning: #FBBF24;
+  --danger: #F16565;
 }
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-alt: var(--surface-alt);
+  --color-text-primary: var(--text-primary);
+  --color-text-secondary: var(--text-secondary);
+  --color-border: var(--border);
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-accent: var(--accent);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+
+  --color-background: var(--bg);
+  --color-foreground: var(--text-primary);
+
+  --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-serif: var(--font-source-serif), Georgia, serif;
+
+  --radius-lg: var(--radius);
+  --radius-md: calc(var(--radius) - 4px);
+  --radius-sm: calc(var(--radius) - 6px);
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+  html {
+    color-scheme: light;
+  }
+  html.dark {
+    color-scheme: dark;
+  }
+  body {
+    background: var(--bg);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: 14px;
+  }
+  h1, h2, h3, .font-serif-heading {
+    font-family: var(--font-serif);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Minimum touch target helper (Apple HIG 44x44) */
+.touch-target {
+  min-width: 44px;
+  min-height: 44px;
 }
