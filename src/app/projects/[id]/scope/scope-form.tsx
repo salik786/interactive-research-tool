@@ -8,9 +8,11 @@ import {
   addObjective,
   updateObjective,
   deleteObjective,
+  reorderObjectives,
   addSubQuestion,
   updateSubQuestion,
   deleteSubQuestion,
+  reorderSubQuestions,
 } from "./actions";
 import type { Tables } from "@/types/database";
 
@@ -71,6 +73,7 @@ export function ScopeForm({
             }
             onUpdate={(id, content) => updateObjective(id, content, project.id)}
             onDelete={(id) => deleteObjective(id, project.id)}
+            onReorder={(ids) => reorderObjectives(project.id, ids)}
           />
         </CardContent>
       </Card>
@@ -92,6 +95,7 @@ export function ScopeForm({
             }
             onUpdate={(id, content) => updateSubQuestion(id, content, project.id)}
             onDelete={(id) => deleteSubQuestion(id, project.id)}
+            onReorder={(ids) => reorderSubQuestions(project.id, ids)}
           />
         </CardContent>
       </Card>

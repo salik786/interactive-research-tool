@@ -61,9 +61,11 @@ instead of `npm run dev`.
 
 ## Feature-level decisions
 
-- **Reordering**: Objectives and sub-research questions support add/remove
-  as specified; there's no drag-to-reorder UI. New items are appended
-  (`position` = current count).
+- **Reordering**: Objectives and sub-research questions support add/remove,
+  plus reordering via up/down buttons on each row (persisted to `position`).
+  New items are appended (`position` = current count). Buttons rather than
+  drag-and-drop, since a mouse-only drag handle doesn't work on touch
+  devices and the spec requires mobile support down to 375px.
 - **DOI field**: added to the "Add/Edit paper" dialog even though Section
   6.6's field list doesn't mention it, because the spec's own dedupe rule
   ("upsert into sources, dedupe by DOI if present") needs a place to enter

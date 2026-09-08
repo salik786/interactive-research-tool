@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Plus, X, GripVertical } from "lucide-react";
+import { Plus, X, ChevronUp, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { toast } from "sonner";
@@ -16,6 +16,7 @@ export function OrderedListEditor({
   onAdd,
   onUpdate,
   onDelete,
+  onReorder,
   placeholder = "Add an item…",
   itemLabel = "item",
 }: {
@@ -23,6 +24,7 @@ export function OrderedListEditor({
   onAdd: (content: string) => Promise<OrderedListItem | void>;
   onUpdate: (id: string, content: string) => Promise<void>;
   onDelete: (id: string) => Promise<void>;
+  onReorder?: (orderedIds: string[]) => Promise<void>;
   placeholder?: string;
   itemLabel?: string;
 }) {
@@ -76,11 +78,50 @@ export function OrderedListEditor({
     }
   };
 
+  const handleMove = async (index: number, direction: -1 | 1) => {
+    const targetIndex = index + direction;
+    if (targetIndex < 0 || targetIndex >= localItems.length || !onReorder) return;
+
+    const prev = localItems;
+    const next = [...localItems];
+    [next[index], next[targetIndex]] = [next[targetIndex], next[index]];
+    setLocalItems(next);
+    try {
+      await onReorder(next.map((i) => i.id));
+    } catch (err) {
+      setLocalItems(prev);
+      toast.error(`Couldn't reorder ${itemLabel}s`, {
+        description: err instanceof Error ? err.message : undefined,
+      });
+    }
+  };
+
   return (
     <div className="flex flex-col gap-2">
       {localItems.map((item, idx) => (
         <div key={item.id} className="flex items-center gap-2">
-          <GripVertical className="h-4 w-4 shrink-0 text-text-secondary/50" />
+          {onReorder && (
+            <div className="flex shrink-0 flex-col">
+              <button
+                type="button"
+                aria-label={`Move ${itemLabel} up`}
+                disabled={idx === 0}
+                onClick={() => handleMove(idx, -1)}
+                className="touch-target flex items-center justify-center rounded text-text-secondary hover:bg-surface-alt hover:text-text-primary disabled:pointer-events-none disabled:opacity-30"
+              >
+                <ChevronUp className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                aria-label={`Move ${itemLabel} down`}
+                disabled={idx === localItems.length - 1}
+                onClick={() => handleMove(idx, 1)}
+                className="touch-target flex items-center justify-center rounded text-text-secondary hover:bg-surface-alt hover:text-text-primary disabled:pointer-events-none disabled:opacity-30"
+              >
+                <ChevronDown className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          )}
           <span className="w-5 shrink-0 text-sm text-text-secondary">{idx + 1}.</span>
           <ListItemInput item={item} onUpdate={handleUpdate} />
           <Button
@@ -94,7 +135,7 @@ export function OrderedListEditor({
           </Button>
         </div>
       ))}
-      <div className="flex items-center gap-2 pl-6">
+      <div className={`flex items-center gap-2 ${onReorder ? "pl-14" : "pl-6"}`}>
         <Input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}

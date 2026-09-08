@@ -47,6 +47,18 @@ export async function deleteObjective(id: string, projectId: string) {
   revalidatePath(`/projects/${projectId}/scope`);
 }
 
+export async function reorderObjectives(projectId: string, orderedIds: string[]) {
+  const supabase = await createClient();
+  const results = await Promise.all(
+    orderedIds.map((id, position) =>
+      supabase.from("project_objectives").update({ position }).eq("id", id)
+    )
+  );
+  const failed = results.find((r) => r.error);
+  if (failed?.error) throw new Error(failed.error.message);
+  revalidatePath(`/projects/${projectId}/scope`);
+}
+
 export async function addSubQuestion(projectId: string, content: string, position: number) {
   const supabase = await createClient();
   const { data, error } = await supabase
@@ -70,5 +82,17 @@ export async function deleteSubQuestion(id: string, projectId: string) {
   const supabase = await createClient();
   const { error } = await supabase.from("project_sub_questions").delete().eq("id", id);
   if (error) throw new Error(error.message);
+  revalidatePath(`/projects/${projectId}/scope`);
+}
+
+export async function reorderSubQuestions(projectId: string, orderedIds: string[]) {
+  const supabase = await createClient();
+  const results = await Promise.all(
+    orderedIds.map((id, position) =>
+      supabase.from("project_sub_questions").update({ position }).eq("id", id)
+    )
+  );
+  const failed = results.find((r) => r.error);
+  if (failed?.error) throw new Error(failed.error.message);
   revalidatePath(`/projects/${projectId}/scope`);
 }
