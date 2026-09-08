@@ -104,6 +104,17 @@ async function readInputText(request: Request): Promise<string> {
       throw new Error("Please upload a PDF file.");
     }
 
+    // pdf.js (which pdf-parse wraps) touches browser-only globals like
+    // DOMMatrix for font/glyph matrix math even when only extracting text,
+    // not rendering. Node doesn't have them, so a minimal polyfill is
+    // required in server/serverless environments (confirmed needed on
+    // Vercel's production runtime, even though local `next dev` didn't
+    // surface it).
+    if (typeof (globalThis as { DOMMatrix?: unknown }).DOMMatrix === "undefined") {
+      const { default: DOMMatrixPolyfill } = await import("dommatrix");
+      (globalThis as { DOMMatrix?: unknown }).DOMMatrix = DOMMatrixPolyfill;
+    }
+
     const buffer = Buffer.from(await file.arrayBuffer());
     const { PDFParse } = await import("pdf-parse");
     const parser = new PDFParse({ data: buffer });
