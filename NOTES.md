@@ -13,11 +13,26 @@ metrics simply because they weren't in the short text it was given. Fixed:
 - Accepts either pasted text (`{ text }` as JSON) of any length, or a PDF
   (`multipart/form-data`, field `pdf`), extracted server-side with
   `pdf-parse` before anything reaches the AI call.
-- `pdf-parse` (pdf.js under the hood) resolves its worker script by a
-  relative path at runtime; letting Next.js bundle it breaks that
-  ("Setting up fake worker failed: Cannot find module '.../pdf.worker.mjs'").
-  Fixed by adding `serverExternalPackages: ["pdf-parse"]` in
-  `next.config.ts` so it's `require()`'d from `node_modules` unbundled.
+- `pdf-parse` (pdf.js under the hood) needed three separate environment
+  fixes, each only surfacing at a different stage of testing:
+  1. Next.js bundling breaks pdf.js's runtime worker-script resolution
+     ("Setting up fake worker failed: Cannot find module
+     '.../pdf.worker.mjs'"). Fixed with `serverExternalPackages:
+     ["pdf-parse"]` in `next.config.ts`.
+  2. Vercel's production runtime additionally needs `DOMMatrix` (pdf.js
+     touches it for font/glyph matrix math even during plain text
+     extraction) — polyfilled via the pure-JS `dommatrix` package, since
+     local `next dev` didn't need it but production did.
+  3. Even with (1) fixed locally, Vercel's serverless file-tracer still
+     doesn't bundle the worker file into the deployed function (a
+     *different* "Cannot find module" than dev's). Pointing
+     `PDFParse.setWorker()` at a CDN URL fails too — Node's default ESM
+     loader only allows dynamic `import()` of `file:`/`data:` URLs, not
+     `https:`. Final fix: fetch the worker script once and pass it as a
+     base64 `data:` URL (cached per warm serverless instance).
+  Confirmed working end-to-end against the actual Vercel production
+  deployment, not just local dev — the three issues were sequential and
+  each masked the next until deployed.
 - Returns `input_scope: 'abstract' | 'full_text'` (< 2500 chars = abstract),
   surfaced in the UI as a badge when the result came from abstract-only
   input.
