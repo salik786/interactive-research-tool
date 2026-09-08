@@ -1,12 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { Sparkles, Loader2, ShieldCheck } from "lucide-react";
+import { Sparkles, Loader2, ShieldCheck, FileUp, X, TriangleAlert } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectTrigger,
@@ -25,6 +26,8 @@ import {
 import { Separator } from "@/components/ui/separator";
 import type { SourceStatus } from "@/types/database";
 import type { PaperFormInput } from "./actions";
+
+type InputScope = "abstract" | "full_text";
 
 const EMPTY: PaperFormInput = {
   citation: "",
@@ -53,14 +56,17 @@ export function PaperFormDialog({
 }) {
   const [form, setForm] = React.useState<PaperFormInput>(EMPTY);
   const [abstractDraft, setAbstractDraft] = React.useState("");
+  const [pdfFile, setPdfFile] = React.useState<File | null>(null);
   const [extracting, setExtracting] = React.useState(false);
   const [screening, setScreening] = React.useState(false);
+  const [inputScope, setInputScope] = React.useState<InputScope | null>(null);
   const [screenResult, setScreenResult] = React.useState<{
     suggestion: string;
     reasoning: string;
     matched_criterion: string;
   } | null>(null);
   const [saving, setSaving] = React.useState(false);
+  const fileInputRef = React.useRef<HTMLInputElement>(null);
 
   // Reset the form to the dialog's initial value each time it opens.
   /* eslint-disable react-hooks/set-state-in-effect */
@@ -68,6 +74,8 @@ export function PaperFormDialog({
     if (open) {
       setForm(initial ?? EMPTY);
       setAbstractDraft("");
+      setPdfFile(null);
+      setInputScope(null);
       setScreenResult(null);
     }
   }, [open, initial]);
@@ -96,18 +104,38 @@ export function PaperFormDialog({
     }
   };
 
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (file.type !== "application/pdf" && !file.name.toLowerCase().endsWith(".pdf")) {
+      toast.error("Please choose a PDF file.");
+      e.target.value = "";
+      return;
+    }
+    setPdfFile(file);
+    setAbstractDraft("");
+  };
+
   const handleExtract = async () => {
-    if (!abstractDraft.trim()) {
-      toast.error("Paste an abstract first.");
+    if (!abstractDraft.trim() && !pdfFile) {
+      toast.error("Paste some text or upload a PDF first.");
       return;
     }
     setExtracting(true);
+    setInputScope(null);
     try {
-      const res = await fetch("/api/ai/extract-paper", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ abstract: abstractDraft }),
-      });
+      let res: Response;
+      if (pdfFile) {
+        const formData = new FormData();
+        formData.append("pdf", pdfFile);
+        res = await fetch("/api/ai/extract-paper", { method: "POST", body: formData });
+      } else {
+        res = await fetch("/api/ai/extract-paper", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ text: abstractDraft }),
+        });
+      }
       const data = await res.json();
       if (!res.ok) throw new Error(data.error ?? "Extraction failed.");
       setForm((prev) => ({
@@ -118,6 +146,7 @@ export function PaperFormDialog({
         key_result: data.key_result || prev.key_result,
         relevance_note: data.relevance_note || prev.relevance_note,
       }));
+      setInputScope(data.input_scope ?? null);
       toast.success("Draft filled in — review before saving.");
     } catch (err) {
       toast.error("AI extraction failed", { description: err instanceof Error ? err.message : undefined });
@@ -155,14 +184,52 @@ export function PaperFormDialog({
 
         <div className="flex flex-col gap-2 rounded-md border border-dashed border-border bg-surface-alt p-3">
           <Label className="flex items-center gap-1.5 text-sm">
-            <Sparkles className="h-3.5 w-3.5 text-primary" /> AI extract from abstract
+            <Sparkles className="h-3.5 w-3.5 text-primary" /> AI extract from paper text or PDF
           </Label>
           <Textarea
             value={abstractDraft}
-            onChange={(e) => setAbstractDraft(e.target.value)}
-            placeholder="Paste an abstract here, then click Extract — you'll still review and edit every field before saving."
+            onChange={(e) => {
+              setAbstractDraft(e.target.value);
+              if (e.target.value) setPdfFile(null);
+            }}
+            placeholder="Paste the abstract or the full paper text here (full text gives much better results), or upload a PDF below."
             rows={3}
           />
+          <div className="flex items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="application/pdf,.pdf"
+              onChange={handleFileChange}
+              className="hidden"
+            />
+            {pdfFile ? (
+              <span className="flex items-center gap-1.5 rounded-md border border-border bg-surface px-2.5 py-1.5 text-xs">
+                <FileUp className="h-3.5 w-3.5 text-primary" />
+                <span className="max-w-48 truncate">{pdfFile.name}</span>
+                <button
+                  type="button"
+                  aria-label="Remove PDF"
+                  onClick={() => {
+                    setPdfFile(null);
+                    if (fileInputRef.current) fileInputRef.current.value = "";
+                  }}
+                  className="touch-target -mr-1.5 flex h-5 w-5 items-center justify-center rounded-full hover:bg-surface-alt"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </span>
+            ) : (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <FileUp className="h-4 w-4" /> Upload PDF
+              </Button>
+            )}
+          </div>
           <div className="flex flex-wrap items-center gap-2">
             <Button type="button" variant="secondary" size="sm" onClick={handleExtract} disabled={extracting} className="self-start">
               {extracting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Sparkles className="h-4 w-4" />}
@@ -173,6 +240,12 @@ export function PaperFormDialog({
               {screening ? "Checking…" : "Check against criteria"}
             </Button>
           </div>
+          {inputScope === "abstract" && (
+            <Badge variant="warning" className="w-fit gap-1">
+              <TriangleAlert className="h-3 w-3" />
+              Based on abstract only — key metrics may be incomplete
+            </Badge>
+          )}
           {screenResult && (
             <p className="rounded-md bg-surface px-3 py-2 text-xs text-text-secondary">
               <span className="font-medium capitalize text-text-primary">{screenResult.suggestion}</span>

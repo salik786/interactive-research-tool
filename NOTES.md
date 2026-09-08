@@ -4,6 +4,42 @@ This file records decisions made where the spec left something unspecified,
 plus known gaps, per the build brief's instruction to default to the
 simplest correct choice and document it rather than skip the feature.
 
+## Paper extraction: PDF upload + accuracy fixes
+
+`POST /api/ai/extract-paper` originally only accepted a pasted abstract,
+which produced fabricated citations, vague method descriptions, and missed
+metrics simply because they weren't in the short text it was given. Fixed:
+
+- Accepts either pasted text (`{ text }` as JSON) of any length, or a PDF
+  (`multipart/form-data`, field `pdf`), extracted server-side with
+  `pdf-parse` before anything reaches the AI call.
+- `pdf-parse` (pdf.js under the hood) resolves its worker script by a
+  relative path at runtime; letting Next.js bundle it breaks that
+  ("Setting up fake worker failed: Cannot find module '.../pdf.worker.mjs'").
+  Fixed by adding `serverExternalPackages: ["pdf-parse"]` in
+  `next.config.ts` so it's `require()`'d from `node_modules` unbundled.
+- Returns `input_scope: 'abstract' | 'full_text'` (< 2500 chars = abstract),
+  surfaced in the UI as a badge when the result came from abstract-only
+  input.
+- **Real bug found via manual verification against an actual paper**: the
+  first version capped text sent to the model at 20,000 characters. For a
+  dense paper, the Results section (where the actual reported numbers live)
+  can land well past that point, after pages of method/derivation — the cap
+  was silently truncating away exactly the metrics this feature exists to
+  capture, and the model correctly reported "not stated" about text it
+  never saw. Raised to 100,000 characters (gpt-4o's context window handles
+  this trivially) and tightened the prompt to explicitly instruct reading
+  the whole document before concluding a metric is absent. Verified by
+  reading a real IEEE paper's ground truth directly and confirming the
+  re-run extraction matched exactly (author list, DOI, algorithm
+  components, and both reported result tables).
+- The system prompt explicitly forbids inventing citation/title/year/author
+  details not present in the given text, requires the method field to name
+  actual algorithm/architecture components (not a generic category), and
+  keeps `relevance_note` strictly factual — screening judgment (keep/
+  exclude reasoning against the project's actual criteria) stays entirely
+  in `/api/ai/screen-paper`, unchanged.
+
 ## RLS bug found during testing (fixed in the migration file)
 
 Creating a project failed with `new row violates row-level security policy
