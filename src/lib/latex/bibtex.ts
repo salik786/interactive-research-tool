@@ -9,10 +9,13 @@ export interface BibEntry {
   key: string;
   type: string;
   fields: Record<string, string>;
+  /** Offsets of the entry in the source text: `@` … closing brace (exclusive). */
+  start: number;
+  end: number;
 }
 
 /** Reads a {…} or "…" value starting at `i`, returning the raw inner text and the index after it. */
-function readValue(src: string, i: number): { value: string; end: number } {
+export function readValue(src: string, i: number): { value: string; end: number } {
   while (/\s/.test(src[i] ?? "")) i++;
   const parts: string[] = [];
   for (;;) {
@@ -76,7 +79,8 @@ export function parseBib(text: string): Map<string, BibEntry> {
       fields[nameMatch[1].toLowerCase()] = value.replace(/\s+/g, " ").trim();
       i = end;
     }
-    if (key) entries.set(key, { key, type, fields });
+    const end = text[i] === "}" || text[i] === ")" ? i + 1 : i;
+    if (key && !entries.has(key)) entries.set(key, { key, type, fields, start: m.index, end });
     re.lastIndex = Math.max(re.lastIndex, i);
   }
   return entries;

@@ -111,6 +111,34 @@ downloads for the whole project `.zip`, `.pdf` and Word `.docx`.
   policies are type-checked but were not executed**, because they need migration
   0003 applied and a signed-in session.
 
+- **Editor (colours, settings, autocomplete).** Own LaTeX and BibTeX syntax modes
+  (`src/lib/latex/editor-languages.ts`) so commands, environments, section titles,
+  `\cite` keys, `\ref`/`\label` keys, math, comments and BibTeX fields each get their
+  own colour; six colour themes plus "match app". Editor settings (View → Editor
+  settings): theme, font (mono / Inter / Source Serif), size, line spacing,
+  indentation, wrap, line numbers, current-line highlight, auto-close brackets,
+  autocomplete, browser spellcheck, auto-compile (~2.5 s after typing stops). Stored
+  in `localStorage` per browser — a personal preference, not project data.
+  Autocomplete is fed live from the project: `\cite{` → keys from every `.bib` (with
+  author/year/title), `\ref{` → `\label`s from every `.tex`, `\includegraphics{` →
+  uploaded figures, `\input{` → `.tex` files, `\begin{` → whole environment blocks.
+- **Reference checker** (View → Check references, or the button on any `.bib`).
+  Verifies each entry from the browser against **Crossref** (DOI + bibliographic
+  search), **DataCite** (software/data DOIs such as Zenodo) and **OpenAlex** (fallback:
+  arXiv, books…). All three are free, keyless and CORS-enabled, so no server route or
+  API key is needed. Only the entry's DOI, title, first author and year are sent.
+  Statuses: Verified / Check (record found but title, year or first author differ, or
+  the DOI belongs to another work or doesn't exist) / Not found (nothing similar —
+  possibly fabricated; softer wording for software/web/report types, which often
+  aren't indexed) / Skipped (no title). One-click fixes write `doi`/`year` into the
+  `.bib` (preserving its formatting). Instant local checks need no network: cited keys
+  missing from the `.bib`, duplicate keys, the same DOI in several entries, missing
+  required fields per entry type, and entries never cited. Title matching is a
+  word-overlap score tolerant of LaTeX markup, accents and dropped subtitles;
+  "Verified" means the catalogue record matches — it does not judge whether the
+  source supports the claim it's cited for. Verified against the live APIs with a real
+  paper, a fabricated one, an invented DOI, a wrong year and a Zenodo DOI.
+
 ## Paper extraction: PDF upload + accuracy fixes
 
 `POST /api/ai/extract-paper` originally only accepted a pasted abstract,

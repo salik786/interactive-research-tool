@@ -30,12 +30,10 @@ import {
   Minimize2,
   PanelLeft,
   Columns2,
-  Minus,
-  Plus,
+  Settings2,
+  ShieldCheck,
   Eye,
 } from "lucide-react";
-import { StreamLanguage } from "@codemirror/language";
-import { stex } from "@codemirror/legacy-modes/mode/stex";
 import { EditorView } from "@codemirror/view";
 import type { SiglumCompiler } from "@siglum/engine";
 import { Button } from "@/components/ui/button";
@@ -86,7 +84,13 @@ import {
 } from "@/lib/latex/project-files";
 import { explainTexError, extractLogWarnings, hasWarnings, type ExplainedError, type LogWarnings } from "@/lib/latex/diagnostics";
 import type { SelectedFile, UploadPlan } from "@/lib/latex/upload-plan";
+import { latexLanguage, bibtexLanguage } from "@/lib/latex/editor-languages";
+import { DEFAULT_SETTINGS, loadSettings, saveSettings, settingsExtensions, type EditorSettings } from "@/lib/latex/editor-settings";
+import { latexCompletion, type CompletionData } from "@/lib/latex/latex-completions";
+import { parseBib } from "@/lib/latex/bibtex";
 import { FileTree } from "./file-tree";
+import { ReferencesDialog } from "./references-dialog";
+import { EditorSettingsDialog } from "./editor-settings-dialog";
 import { BinaryPreview } from "./binary-preview";
 import { DeleteDialog, NewFileDialog, RenameDialog, UploadDialog, folderOf } from "./file-dialogs";
 
@@ -197,30 +201,22 @@ export function LatexWorkspace({
   const [fullscreen, setFullscreen] = React.useState(false);
   const [view, setView] = React.useState<ViewMode>("split");
   const [showFiles, setShowFiles] = React.useState(true);
-  const [fontSize, setFontSize] = React.useState<number>(() => {
-    try {
-      const saved = typeof window !== "undefined" ? Number(window.localStorage.getItem("latex-font-size")) : 0;
-      return saved >= 11 && saved <= 24 ? saved : 14;
-    } catch {
-      return 14;
-    }
-  });
+  const [settings, setSettings] = React.useState<EditorSettings>(() =>
+    typeof window === "undefined" ? DEFAULT_SETTINGS : loadSettings()
+  );
+  const updateSettings = (patch: Partial<EditorSettings>) =>
+    setSettings((cur) => {
+      const next = { ...cur, ...patch };
+      saveSettings(next);
+      return next;
+    });
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [refsOpen, setRefsOpen] = React.useState(false);
   // Full screen is for focus: start with just the editor + PDF, and restore the file list on exit.
   const toggleFullscreen = () => {
     setShowFiles(fullscreen); // leaving → show files again; entering → hide them
     setFullscreen(!fullscreen);
   };
-  const changeFontSize = (delta: number) =>
-    setFontSize((cur) => {
-      const next = Math.min(24, Math.max(11, cur + delta));
-      try {
-        window.localStorage.setItem("latex-font-size", String(next));
-      } catch {
-        /* preference only */
-      }
-      return next;
-    });
-
   // Full-screen: lock page scroll behind the overlay; Esc exits unless a dialog/menu is open.
   React.useEffect(() => {
     if (!fullscreen) return;
@@ -636,15 +632,60 @@ export function LatexWorkspace({
 
   // ───────────────────────── editor plumbing ─────────────────────────
   const activeExt = activeFile ? extname(activeFile.path) : "";
-  const useTexSyntax = ["tex", "sty", "cls", "def", "cfg", "ltx"].includes(activeExt);
+  const langKind = ["tex", "sty", "cls", "def", "cfg", "ltx", "tikz", "bbl"].includes(activeExt) ? "tex" : activeExt === "bib" ? "bib" : "plain";
+  const appIsDark = resolvedTheme === "dark";
+
+  // Autocomplete reads live project data through a ref, so the extension itself stays stable.
+  const completionDataRef = React.useRef<CompletionData>({ bib: [], labels: [], images: [], texFiles: [], bibFiles: [] });
+  const completionData = React.useMemo<CompletionData>(() => {
+    const text = files.filter((f) => f.kind === "text");
+    const bib = text
+      .filter((f) => extname(f.path) === "bib")
+      .flatMap((f) => [...parseBib(f.content).values()])
+      .map((e) => ({
+        key: e.key,
+        title: e.fields.title?.replace(/[{}]/g, ""),
+        year: e.fields.year,
+        author: e.fields.author?.split(/\s+and\s+/i)[0]?.split(",")[0]?.replace(/[{}]/g, "").trim(),
+      }));
+    const labels = [...new Set(text.filter((f) => extname(f.path) === "tex").flatMap((f) => [...f.content.matchAll(/\\label\{([^}]+)\}/g)].map((m) => m[1])))];
+    return {
+      bib,
+      labels,
+      images: files.filter((f) => f.kind === "binary" && ["png", "jpg", "jpeg", "pdf", "eps"].includes(extname(f.path))).map((f) => f.path),
+      texFiles: text.filter((f) => extname(f.path) === "tex").map((f) => f.path),
+      bibFiles: text.filter((f) => extname(f.path) === "bib").map((f) => f.path),
+    };
+  }, [files]);
+  React.useEffect(() => {
+    completionDataRef.current = completionData;
+  });
+  const completion = React.useMemo(() => latexCompletion(() => completionDataRef.current), []);
+
   const extensions = React.useMemo(
     () => [
-      ...(useTexSyntax ? [StreamLanguage.define(stex)] : []),
-      EditorView.lineWrapping,
-      EditorView.theme({ "&": { fontSize: `${fontSize}px` }, ".cm-content": { lineHeight: "1.6" } }),
+      ...(langKind === "tex" ? [latexLanguage] : langKind === "bib" ? [bibtexLanguage] : []),
+      ...settingsExtensions(settings, appIsDark),
+      ...(settings.autocomplete && langKind === "tex" ? [completion] : []),
     ],
-    [useTexSyntax, fontSize]
+    [langKind, settings, appIsDark, completion]
   );
+
+  // Optional auto-compile: ~2.5 s after the last change.
+  React.useEffect(() => {
+    if (!settings.autoCompile || rev === 0) return;
+    const t = setTimeout(() => void compile(), 2500);
+    return () => clearTimeout(t);
+  }, [rev, settings.autoCompile, compile]);
+
+  /** Replaces a text file's content from outside the editor (e.g. a reference fix). */
+  const applyExternalEdit = (path: string, content: string) => {
+    const target = filesRef.current.find((f) => f.path === path);
+    if (!target) return;
+    setFiles((prev) => prev.map((f) => (f.id === target.id ? { ...f, content, size: content.length } : f)));
+    touch();
+    scheduleSave(target, content);
+  };
 
   const applyGoto = (view: EditorView, path: string) => {
     const goto = pendingGotoRef.current;
@@ -861,12 +902,11 @@ export function LatexWorkspace({
                 <Eye className="h-4 w-4" /> PDF only {view === "pdf" && <Check className="ml-auto h-4 w-4" />}
               </DropdownMenuItem>
               <DropdownMenuSeparator />
-              <DropdownMenuLabel>Text size ({fontSize}px)</DropdownMenuLabel>
-              <DropdownMenuItem className="min-h-11" disabled={fontSize <= 11} onSelect={(e) => { e.preventDefault(); changeFontSize(-1); }}>
-                <Minus className="h-4 w-4" /> Smaller
+              <DropdownMenuItem className="min-h-11" onSelect={() => setSettingsOpen(true)}>
+                <Settings2 className="h-4 w-4" /> Editor settings…
               </DropdownMenuItem>
-              <DropdownMenuItem className="min-h-11" disabled={fontSize >= 24} onSelect={(e) => { e.preventDefault(); changeFontSize(1); }}>
-                <Plus className="h-4 w-4" /> Larger
+              <DropdownMenuItem className="min-h-11" onSelect={() => setRefsOpen(true)}>
+                <ShieldCheck className="h-4 w-4" /> Check references…
               </DropdownMenuItem>
             </DropdownMenuContent>
           </DropdownMenu>
@@ -958,6 +998,9 @@ export function LatexWorkspace({
                   <DropdownMenuItem className="min-h-11" onSelect={() => setResetOpen(true)}>
                     <RotateCcw className="h-4 w-4" /> Regenerate main.tex from project
                   </DropdownMenuItem>
+                  <DropdownMenuItem className="min-h-11" onSelect={() => setRefsOpen(true)}>
+                    <ShieldCheck className="h-4 w-4" /> Check references
+                  </DropdownMenuItem>
                 </DropdownMenuContent>
               </DropdownMenu>
             </div>
@@ -1010,9 +1053,15 @@ export function LatexWorkspace({
               <span className="truncate">{activeFile?.path ?? "No file selected"}</span>
               {activeFile && activeFile.path === effectiveMain && <Badge variant="warning">main</Badge>}
             </span>
-            <span className="hidden shrink-0 text-xs text-text-secondary sm:inline">
-              {activeFile?.kind === "text" ? "Ctrl/⌘ + Enter to compile" : ""}
-            </span>
+            {activeExt === "bib" ? (
+              <Button size="sm" variant="outline" onClick={() => setRefsOpen(true)}>
+                <ShieldCheck className="h-3.5 w-3.5" /> Check references
+              </Button>
+            ) : (
+              <span className="hidden shrink-0 text-xs text-text-secondary sm:inline">
+                {activeFile?.kind === "text" ? "Ctrl/⌘ + Enter to compile" : ""}
+              </span>
+            )}
           </CardHeader>
           <div className={paneH} onKeyDownCapture={handleEditorKeyDownCapture}>
             {activeFile?.kind === "text" ? (
@@ -1025,10 +1074,19 @@ export function LatexWorkspace({
                   applyGoto(view, activeFile.path);
                 }}
                 extensions={extensions}
-                theme={resolvedTheme === "dark" ? "dark" : "light"}
+                theme="none"
                 height="100%"
                 style={{ height: "100%" }}
-                basicSetup={{ lineNumbers: true, foldGutter: false, highlightActiveLine: true, autocompletion: false }}
+                basicSetup={{
+                  lineNumbers: settings.lineNumbers,
+                  foldGutter: false,
+                  highlightActiveLine: settings.activeLine,
+                  highlightActiveLineGutter: settings.activeLine,
+                  closeBrackets: settings.closeBrackets,
+                  bracketMatching: true,
+                  autocompletion: false,
+                  tabSize: settings.tabSize,
+                }}
                 aria-label={`Editing ${activeFile.path}`}
               />
             ) : activeFile ? (
@@ -1126,6 +1184,9 @@ export function LatexWorkspace({
                       ({warnings.citations.slice(0, 5).join(", ")}
                       {warnings.citations.length > 5 ? "…" : ""}) — check the key exists in your <code>.bib</code> and that{" "}
                       <code>\bibliography{"{…}"}</code> names that file.{" "}
+                      <button type="button" className="font-medium text-primary underline-offset-2 hover:underline" onClick={() => setRefsOpen(true)}>
+                        Check references
+                      </button>{" "}
                     </>
                   )}
                   {warnings.references.length > 0 && (
@@ -1207,6 +1268,20 @@ export function LatexWorkspace({
         isMain={deleteTarget?.path === effectiveMain}
         onOpenChange={setDeleteOpen}
         onDelete={handleDelete}
+      />
+      <ReferencesDialog
+        open={refsOpen}
+        onOpenChange={setRefsOpen}
+        files={files}
+        onApplyFix={applyExternalEdit}
+        onOpenEntry={(path, line) => goTo(path, line)}
+      />
+      <EditorSettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
+        settings={settings}
+        onChange={updateSettings}
+        appIsDark={appIsDark}
       />
       <Dialog open={resetOpen} onOpenChange={setResetOpen}>
         <DialogContent>
