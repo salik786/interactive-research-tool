@@ -316,3 +316,53 @@ export function flattenTex(
   };
   return { source: visit(mainPath, []), missing };
 }
+
+/** Directories from `\graphicspath{{figures/}{images/}}` (LaTeX searches these for figures). */
+export function parseGraphicsPaths(source: string): string[] {
+  const m = /^[^%\n]*\\graphicspath\s*\{((?:\s*\{[^}]*\}\s*)+)\}/m.exec(source);
+  if (!m) return [];
+  return [...m[1].matchAll(/\{([^}]*)\}/g)].map((g) => g[1].trim().replace(/^\.\//, "").replace(/\/+$/, "")).filter(Boolean);
+}
+
+export const GRAPHIC_EXTS = ["png", "jpg", "jpeg", "pdf", "eps", "svg", "gif", "webp"];
+
+/**
+ * Finds the project file an `\includegraphics{…}` refers to, the way LaTeX would
+ * (extension optional, `\graphicspath` folders), then more forgivingly (case-insensitive,
+ * and finally a unique file-name match anywhere in the project).
+ */
+export function findGraphic(target: string, paths: string[], graphicsPaths: string[] = []): string | null {
+  const clean = target.trim().replace(/^\.\//, "");
+  if (!clean) return null;
+  const lower = new Map(paths.map((p) => [p.toLowerCase(), p]));
+  const bases = ["", ...graphicsPaths.map((g) => g + "/")].map((pre) => normalizePath(pre + clean)).filter((b): b is string => !!b);
+  for (const base of bases) {
+    const hit = lower.get(base.toLowerCase());
+    if (hit && GRAPHIC_EXTS.includes(extname(hit))) return hit;
+    for (const ext of GRAPHIC_EXTS) {
+      const withExt = lower.get(`${base}.${ext}`.toLowerCase());
+      if (withExt) return withExt;
+    }
+  }
+  const stem = basename(clean).toLowerCase();
+  const stemNoExt = stem.replace(/\.[a-z0-9]+$/i, "");
+  const matches = paths.filter((p) => {
+    const b = basename(p).toLowerCase();
+    return GRAPHIC_EXTS.includes(extname(p)) && (b === stem || b.replace(/\.[a-z0-9]+$/i, "") === stemNoExt);
+  });
+  if (matches.length === 0) return null;
+  // Prefer formats Word can show, then a vector/PDF original.
+  const rank = (p: string) => GRAPHIC_EXTS.indexOf(extname(p));
+  return matches.sort((a, b) => rank(a) - rank(b))[0];
+}
+
+/** Every `\includegraphics` target in a document (comments ignored). */
+export function findGraphicTargets(source: string): string[] {
+  const out: string[] = [];
+  for (const line of source.split("\n")) {
+    const c = commentStart(line);
+    const code = c === -1 ? line : line.slice(0, c);
+    for (const m of code.matchAll(/\\includegraphics\*?\s*(?:\[[^\]]*\])?\s*\{([^}]+)\}/g)) out.push(m[1].trim());
+  }
+  return [...new Set(out)];
+}

@@ -26,6 +26,13 @@ import {
   RotateCcw,
   Star,
   Info,
+  Maximize2,
+  Minimize2,
+  PanelLeft,
+  Columns2,
+  Minus,
+  Plus,
+  Eye,
 } from "lucide-react";
 import { StreamLanguage } from "@codemirror/language";
 import { stex } from "@codemirror/legacy-modes/mode/stex";
@@ -73,6 +80,9 @@ import {
   figureSnippet,
   flattenTex,
   basename,
+  findGraphic,
+  findGraphicTargets,
+  parseGraphicsPaths,
 } from "@/lib/latex/project-files";
 import { explainTexError, extractLogWarnings, hasWarnings, type ExplainedError, type LogWarnings } from "@/lib/latex/diagnostics";
 import type { SelectedFile, UploadPlan } from "@/lib/latex/upload-plan";
@@ -181,6 +191,50 @@ export function LatexWorkspace({
   const [deleteOpen, setDeleteOpen] = React.useState(false);
   const [resetOpen, setResetOpen] = React.useState(false);
   const [dropActive, setDropActive] = React.useState(false);
+
+  // Layout: full-screen focus mode, which panes are visible, and editor font size.
+  type ViewMode = "editor" | "split" | "pdf";
+  const [fullscreen, setFullscreen] = React.useState(false);
+  const [view, setView] = React.useState<ViewMode>("split");
+  const [showFiles, setShowFiles] = React.useState(true);
+  const [fontSize, setFontSize] = React.useState<number>(() => {
+    try {
+      const saved = typeof window !== "undefined" ? Number(window.localStorage.getItem("latex-font-size")) : 0;
+      return saved >= 11 && saved <= 24 ? saved : 14;
+    } catch {
+      return 14;
+    }
+  });
+  // Full screen is for focus: start with just the editor + PDF, and restore the file list on exit.
+  const toggleFullscreen = () => {
+    setShowFiles(fullscreen); // leaving → show files again; entering → hide them
+    setFullscreen(!fullscreen);
+  };
+  const changeFontSize = (delta: number) =>
+    setFontSize((cur) => {
+      const next = Math.min(24, Math.max(11, cur + delta));
+      try {
+        window.localStorage.setItem("latex-font-size", String(next));
+      } catch {
+        /* preference only */
+      }
+      return next;
+    });
+
+  // Full-screen: lock page scroll behind the overlay; Esc exits unless a dialog/menu is open.
+  React.useEffect(() => {
+    if (!fullscreen) return;
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && !document.querySelector('[role="dialog"], [role="menu"], [role="listbox"]')) setFullscreen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      window.removeEventListener("keydown", onKey);
+    };
+  }, [fullscreen]);
 
   const compilerRef = React.useRef<SiglumCompiler | null>(null);
   const compilerPromiseRef = React.useRef<Promise<SiglumCompiler> | null>(null);
@@ -584,8 +638,12 @@ export function LatexWorkspace({
   const activeExt = activeFile ? extname(activeFile.path) : "";
   const useTexSyntax = ["tex", "sty", "cls", "def", "cfg", "ltx"].includes(activeExt);
   const extensions = React.useMemo(
-    () => (useTexSyntax ? [StreamLanguage.define(stex), EditorView.lineWrapping] : [EditorView.lineWrapping]),
-    [useTexSyntax]
+    () => [
+      ...(useTexSyntax ? [StreamLanguage.define(stex)] : []),
+      EditorView.lineWrapping,
+      EditorView.theme({ "&": { fontSize: `${fontSize}px` }, ".cm-content": { lineHeight: "1.6" } }),
+    ],
+    [useTexSyntax, fontSize]
   );
 
   const applyGoto = (view: EditorView, path: string) => {
@@ -665,13 +723,35 @@ export function LatexWorkspace({
       const { source, missing } = flattenTex(main, (p) => snapshot.find((f) => f.path === p)?.content, paths);
 
       const { latexToDocxBlob } = await import("@/lib/latex/to-docx");
-      const imageFiles = snapshot.filter((f) => f.kind === "binary" && ["png", "jpg", "jpeg"].includes(extname(f.path)));
-      const imageData = await loadBinaries(imageFiles);
+      // Only fetch the figures the document actually uses. PNG/JPG go in as-is; PDF figures
+      // are rasterised in the browser (Word can't embed PDF).
+      const binaryByPath = new Map(snapshot.filter((f) => f.kind === "binary").map((f) => [f.path, f]));
+      const binaryPaths = [...binaryByPath.keys()];
+      const graphicsPaths = parseGraphicsPaths(source);
+      const used = new Set<string>();
+      for (const target of findGraphicTargets(source)) {
+        const hit = findGraphic(target, binaryPaths, graphicsPaths);
+        if (hit) used.add(hit);
+      }
+      const rawData = await loadBinaries([...used].map((p) => binaryByPath.get(p)!));
+      const imageData = new Map<string, Uint8Array>();
+      const { renderPdfToPng } = await import("@/lib/latex/figure-convert");
+      for (const [path, bytes] of rawData) {
+        const ext = extname(path);
+        if (ext === "png" || ext === "jpg" || ext === "jpeg") imageData.set(path, bytes);
+        else if (ext === "pdf") {
+          try {
+            imageData.set(path, await renderPdfToPng(bytes));
+          } catch (err) {
+            console.warn(`Couldn't render ${path}`, err);
+          }
+        }
+      }
       const bibText = snapshot
         .filter((f) => f.kind === "text" && extname(f.path) === "bib")
         .map((f) => f.content)
         .join("\n\n");
-      const { blob, warnings: notes } = await latexToDocxBlob(source, { images: imageData, bibliography: bibText || undefined });
+      const { blob, warnings: notes } = await latexToDocxBlob(source, { images: imageData, bibliography: bibText || undefined, projectPaths: paths });
       downloadBlob(`${filename}.docx`, blob);
       const all = [...notes, ...(missing.length ? [`Couldn't find included file(s): ${missing.join(", ")}.`] : [])];
       if (all.length > 0) toast.info("Exported to Word with some simplifications", { description: all.join(" ") });
@@ -718,9 +798,26 @@ export function LatexWorkspace({
   const fileCount = files.length;
   const hasBinaries = files.some((f) => f.kind === "binary");
 
+  const paneH = fullscreen ? "h-[calc(100dvh-7rem)]" : "h-[60vh] lg:h-[72vh]";
+  const filesH = fullscreen ? "lg:h-[calc(100dvh-12.5rem)]" : "lg:h-[calc(72vh-5.5rem)]";
+  const single = view !== "split";
+  const gridCols = showFiles
+    ? single
+      ? "lg:grid-cols-[230px_minmax(0,1fr)]"
+      : "lg:grid-cols-[230px_minmax(0,1fr)_minmax(0,1fr)]"
+    : single
+      ? "lg:grid-cols-1"
+      : "lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]";
+
   return (
-    <div className="flex flex-col gap-4 p-4 sm:p-6">
-      {storageError && <StorageNotice message={storageError} />}
+    <div
+      className={
+        fullscreen
+          ? "fixed inset-0 z-40 flex flex-col gap-3 overflow-auto bg-background p-3"
+          : "flex flex-col gap-4 p-4 sm:p-6"
+      }
+    >
+      {storageError && !fullscreen && <StorageNotice message={storageError} />}
 
       {/* Toolbar */}
       <div className="flex flex-wrap items-center gap-2">
@@ -741,6 +838,48 @@ export function LatexWorkspace({
 
         <div className="ml-auto flex flex-wrap items-center gap-2">
           <SavedIndicator status={saveStatus} />
+
+          {/* One compact View menu instead of a row of icons */}
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button variant="outline" aria-label="View options">
+                <Columns2 className="h-4 w-4" /> View <ChevronDown className="h-4 w-4" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="w-60">
+              <DropdownMenuLabel>Panels</DropdownMenuLabel>
+              <DropdownMenuItem className="min-h-11" onSelect={() => setShowFiles((v) => !v)}>
+                <PanelLeft className="h-4 w-4" /> File list {showFiles && <Check className="ml-auto h-4 w-4" />}
+              </DropdownMenuItem>
+              <DropdownMenuItem className="min-h-11" onSelect={() => setView("editor")}>
+                <FileCode2 className="h-4 w-4" /> Editor only {view === "editor" && <Check className="ml-auto h-4 w-4" />}
+              </DropdownMenuItem>
+              <DropdownMenuItem className="min-h-11" onSelect={() => setView("split")}>
+                <Columns2 className="h-4 w-4" /> Editor + PDF {view === "split" && <Check className="ml-auto h-4 w-4" />}
+              </DropdownMenuItem>
+              <DropdownMenuItem className="min-h-11" onSelect={() => setView("pdf")}>
+                <Eye className="h-4 w-4" /> PDF only {view === "pdf" && <Check className="ml-auto h-4 w-4" />}
+              </DropdownMenuItem>
+              <DropdownMenuSeparator />
+              <DropdownMenuLabel>Text size ({fontSize}px)</DropdownMenuLabel>
+              <DropdownMenuItem className="min-h-11" disabled={fontSize <= 11} onSelect={(e) => { e.preventDefault(); changeFontSize(-1); }}>
+                <Minus className="h-4 w-4" /> Smaller
+              </DropdownMenuItem>
+              <DropdownMenuItem className="min-h-11" disabled={fontSize >= 24} onSelect={(e) => { e.preventDefault(); changeFontSize(1); }}>
+                <Plus className="h-4 w-4" /> Larger
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+
+          <Button
+            variant={fullscreen ? "default" : "outline"}
+            onClick={toggleFullscreen}
+            aria-pressed={fullscreen}
+            title={fullscreen ? "Exit full screen (Esc)" : "Full-screen editor"}
+          >
+            {fullscreen ? <Minimize2 className="h-4 w-4" /> : <Maximize2 className="h-4 w-4" />}
+            {fullscreen ? "Exit full screen" : "Full screen"}
+          </Button>
 
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
@@ -773,10 +912,10 @@ export function LatexWorkspace({
       </div>
 
       {/* Files | Editor | Preview */}
-      <div className="grid grid-cols-1 gap-4 lg:grid-cols-[230px_minmax(0,1fr)_minmax(0,1fr)]">
+      <div className={`grid grid-cols-1 gap-4 ${gridCols}`}>
         {/* File tree */}
         <Card
-          className={`flex flex-col overflow-hidden transition-colors ${dropActive ? "border-primary bg-primary/5" : ""}`}
+          className={`flex-col overflow-hidden transition-colors ${showFiles ? "flex" : "hidden"} ${dropActive ? "border-primary bg-primary/5" : ""}`}
           onDragOver={(e) => {
             if (!e.dataTransfer.types.includes("Files")) return;
             e.preventDefault();
@@ -823,7 +962,7 @@ export function LatexWorkspace({
               </DropdownMenu>
             </div>
           </CardHeader>
-          <div id="latex-file-panel" className={`${filesOpenMobile ? "block" : "hidden"} max-h-72 overflow-auto lg:block lg:max-h-none lg:h-[calc(72vh-5.5rem)]`}>
+          <div id="latex-file-panel" className={`${filesOpenMobile ? "block" : "hidden"} max-h-72 overflow-auto lg:block lg:max-h-none ${filesH}`}>
             {files.length === 0 ? (
               <div className="flex flex-col items-center gap-2 p-6 text-center text-sm text-text-secondary">
                 <p>No files yet.</p>
@@ -864,7 +1003,7 @@ export function LatexWorkspace({
         </Card>
 
         {/* Editor / viewer */}
-        <Card className="flex flex-col overflow-hidden">
+        <Card className={`flex-col overflow-hidden ${view === "pdf" ? "hidden" : "flex"}`}>
           <CardHeader className="flex-row items-center justify-between gap-2 space-y-0 border-b border-border py-3">
             <span className="flex min-w-0 items-center gap-2 font-mono text-sm text-text-secondary">
               <FileCode2 className="h-4 w-4 shrink-0" />
@@ -875,7 +1014,7 @@ export function LatexWorkspace({
               {activeFile?.kind === "text" ? "Ctrl/⌘ + Enter to compile" : ""}
             </span>
           </CardHeader>
-          <div className="h-[60vh] lg:h-[72vh]" onKeyDownCapture={handleEditorKeyDownCapture}>
+          <div className={paneH} onKeyDownCapture={handleEditorKeyDownCapture}>
             {activeFile?.kind === "text" ? (
               <CodeMirror
                 key={activeFile.id}
@@ -909,7 +1048,7 @@ export function LatexWorkspace({
         </Card>
 
         {/* PDF preview */}
-        <Card className="flex flex-col overflow-hidden">
+        <Card className={`flex-col overflow-hidden ${view === "editor" ? "hidden" : "flex"}`}>
           <CardHeader className="flex-row items-center justify-between gap-2 space-y-0 border-b border-border py-3">
             <span className="flex items-center gap-2 text-sm text-text-secondary">
               <FileText className="h-4 w-4" /> PDF preview
@@ -928,7 +1067,7 @@ export function LatexWorkspace({
               )}
             </div>
           </CardHeader>
-          <div className="relative h-[60vh] bg-surface-alt lg:h-[72vh]">
+          <div className={`relative bg-surface-alt ${paneH}`}>
             {pdf ? (
               <iframe src={pdf.url} title="Compiled PDF preview" className="h-full w-full" />
             ) : (

@@ -107,7 +107,7 @@ export default async function LatexPage({ params }: { params: Promise<{ id: stri
     <div className="mx-auto max-w-[1800px]">
       <PageHeader
         title="LaTeX editor"
-        description="Overleaf-style projects: upload a .zip, figures and a .bib, edit multiple files, preview the PDF, and export .zip, .pdf or Word (.docx)."
+        description="Write, compile and export your paper."
       />
       <LatexWorkspace
         projectId={id}

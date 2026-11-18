@@ -24,7 +24,7 @@ import {
   WidthType,
 } from "docx";
 import { expandBibliography } from "./bibtex";
-import { extname, resolveProjectPath } from "./project-files";
+import { extname, findGraphic, parseGraphicsPaths } from "./project-files";
 
 /** A run inside a paragraph: text, or an embedded figure. */
 type Run = TextRun | ImageRun;
@@ -45,6 +45,12 @@ interface Ctx {
   orderedLists: number;
   /** Project images (png/jpg) by project path, for embedding `\includegraphics`. */
   images: Map<string, Uint8Array>;
+  /** Folders from \\graphicspath. */
+  graphicsPaths: string[];
+  /** Every project file path (to tell "not found" from "found but not embeddable"). */
+  allPaths: string[];
+  /** `figure — reason` for each \\includegraphics that couldn't be embedded. */
+  failedFigures: Map<string, string>;
 }
 
 type Block =
@@ -342,19 +348,36 @@ function imageSize(bytes: Uint8Array, type: "png" | "jpg"): { width: number; hei
 
 const MAX_IMAGE_PX = 500; // ≈ the A4 text width at 96 dpi
 
-/** Resolves an `\includegraphics` target against uploaded project images and returns an inline picture. */
-function embedImage(target: string, options: string, ctx: Ctx): ImageRun | null {
-  if (ctx.images.size === 0) return null;
-  const path = resolveProjectPath(target, [...ctx.images.keys()], ["png", "jpg", "jpeg"]);
-  if (!path) return null;
-  const ext = extname(path);
-  const type = ext === "png" ? "png" : ext === "jpg" || ext === "jpeg" ? "jpg" : null;
-  const data = ctx.images.get(path);
-  if (!type || !data) return null;
-  const size = imageSize(data, type);
-  if (!size || size.width === 0 || size.height === 0) return null;
+/** Image type from the file's magic bytes (a rendered PDF figure is stored under its .pdf path). */
+function sniffImageType(data: Uint8Array): "png" | "jpg" | null {
+  if (data.length > 8 && data[0] === 0x89 && data[1] === 0x50 && data[2] === 0x4e && data[3] === 0x47) return "png";
+  if (data.length > 3 && data[0] === 0xff && data[1] === 0xd8) return "jpg";
+  return null;
+}
 
-  // Honour width=0.6\linewidth / 8cm / 3in when given; otherwise fit the text width.
+/** Resolves an `\includegraphics` target against project figures and returns an inline picture. */
+function embedImage(target: string, options: string, ctx: Ctx): ImageRun | null {
+  const fail = (reason: string) => {
+    ctx.failedFigures.set(target, reason);
+    return null;
+  };
+  const path = findGraphic(target, ctx.allPaths, ctx.graphicsPaths);
+  if (!path) return fail("not found in the project");
+  const ext = extname(path);
+  const data = ctx.images.get(path);
+  if (!data) {
+    return fail(
+      ["eps", "svg"].includes(ext)
+        ? `${ext.toUpperCase()} figures can't be shown in Word (export a PNG or PDF)`
+        : "couldn't be read"
+    );
+  }
+  const type = sniffImageType(data);
+  if (!type) return fail("unsupported image data");
+  const size = imageSize(data, type);
+  if (!size || size.width === 0 || size.height === 0) return fail("couldn't read its size");
+
+  // Honour width=0.6\\linewidth / 8cm / 3in when given; otherwise fit the text width.
   let widthPx = Math.min(size.width, MAX_IMAGE_PX);
   const w = /width\s*=\s*([0-9.]+)\s*(\\(?:linewidth|textwidth|columnwidth)|cm|mm|in|pt)?/.exec(options);
   if (w) {
@@ -366,6 +389,8 @@ function embedImage(target: string, options: string, ctx: Ctx): ImageRun | null 
     else if (unit === "in") widthPx = n * 96;
     else if (unit === "pt") widthPx = n * 1.333;
     widthPx = Math.min(Math.max(widthPx, 24), MAX_IMAGE_PX);
+  } else if (size.width < MAX_IMAGE_PX && type === "png" && ext === "pdf") {
+    widthPx = MAX_IMAGE_PX * 0.8;
   }
   const heightPx = widthPx * (size.height / size.width);
   return new ImageRun({
@@ -579,16 +604,7 @@ function inline(text: string, ctx: Ctx, fmt: Fmt = {}): Run[] {
         const g = readGroup(text, k);
         flush();
         const image = g ? embedImage(g.content.trim(), o?.content ?? "", ctx) : null;
-        if (image) {
-          runs.push(image);
-        } else {
-          runs.push(mk(`[Image: ${g?.content ?? "figure"}]`, { ...fmt, italics: true }));
-          ctx.warnings.add(
-            ctx.images.size > 0
-              ? "Some figures couldn't be embedded (only PNG and JPG work in Word; PDF/EPS/SVG or missing files appear as “[Image: file]”)."
-              : "Images are replaced with “[Image: file]” placeholders."
-          );
-        }
+        runs.push(image ?? mk(`[Image: ${g?.content ?? "figure"}]`, { ...fmt, italics: true }));
         i = g ? g.end : j;
         continue;
       }
@@ -981,6 +997,8 @@ export interface DocxOptions {
   images?: Map<string, Uint8Array>;
   /** Concatenated `.bib` text, used to build numbered references for `\bibliography{…}`. */
   bibliography?: string;
+  /** All project file paths, so missing figures can be told apart from unsupported ones. */
+  projectPaths?: string[];
 }
 
 export function latexToDocx(source: string, options: DocxOptions = {}): DocxConversion {
@@ -991,6 +1009,9 @@ export function latexToDocx(source: string, options: DocxOptions = {}): DocxConv
     counters: [0, 0, 0],
     orderedLists: 0,
     images: options.images ?? new Map(),
+    graphicsPaths: parseGraphicsPaths(source),
+    allPaths: options.projectPaths ?? [...(options.images?.keys() ?? [])],
+    failedFigures: new Map(),
   };
 
   const preamble = clean.includes("\\begin{document}") ? clean.slice(0, clean.indexOf("\\begin{document}")) : "";
@@ -1292,7 +1313,8 @@ export function latexToDocx(source: string, options: DocxOptions = {}): DocxConv
     ],
   });
 
-  return { doc, warnings: [...ctx.warnings] };
+  const figureWarnings = [...ctx.failedFigures].map(([name, why]) => `Figure “${name}” shown as a placeholder: ${why}.`);
+  return { doc, warnings: [...ctx.warnings, ...figureWarnings] };
 }
 
 export async function latexToDocxBlob(

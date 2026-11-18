@@ -14,7 +14,7 @@
  * entry would produce no PDF at all. Overleaf (latexmk) instead produces the PDF
  * and shows `[?]`. We keep errors fatal and let warnings-only runs continue.
  */
-import { readFileSync, writeFileSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, mkdirSync, existsSync, copyFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -51,4 +51,15 @@ if (!patched) {
     "[copy-siglum-worker] BibTeX patch target not found — engine version changed? Compiles still work, " +
       "but a BibTeX *warning* (e.g. an undefined citation key) will abort the build instead of producing a PDF."
   );
+}
+
+// pdf.js worker, used in the browser to rasterise PDF figures for the Word export.
+const pdfWorker = resolve(root, "node_modules/pdfjs-dist/build/pdf.worker.min.mjs");
+if (existsSync(pdfWorker)) {
+  const pdfDir = resolve(root, "public/pdfjs");
+  mkdirSync(pdfDir, { recursive: true });
+  copyFileSync(pdfWorker, resolve(pdfDir, "pdf.worker.min.mjs"));
+  console.log("[copy-siglum-worker] copied pdf.worker.min.mjs -> public/pdfjs/");
+} else {
+  console.warn("[copy-siglum-worker] pdfjs-dist worker not found — PDF figures can't be embedded in .docx.");
 }

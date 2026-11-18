@@ -15,6 +15,7 @@ const eslintConfig = defineConfig([
     // Vendored third-party worker copied from node_modules at build time
     // (scripts/copy-siglum-worker.mjs) — not our code to lint.
     "public/siglum/**",
+    "public/pdfjs/**",
   ]),
 ]);
 
