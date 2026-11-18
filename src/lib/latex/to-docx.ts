@@ -12,6 +12,7 @@ import {
   AlignmentType,
   Document,
   HeadingLevel,
+  ImageRun,
   LevelFormat,
   PageBreak,
   Packer,
@@ -22,6 +23,11 @@ import {
   TextRun,
   WidthType,
 } from "docx";
+import { expandBibliography } from "./bibtex";
+import { extname, resolveProjectPath } from "./project-files";
+
+/** A run inside a paragraph: text, or an embedded figure. */
+type Run = TextRun | ImageRun;
 
 type Fmt = {
   bold?: boolean;
@@ -37,6 +43,8 @@ interface Ctx {
   warnings: Set<string>;
   counters: [number, number, number];
   orderedLists: number;
+  /** Project images (png/jpg) by project path, for embedding `\includegraphics`. */
+  images: Map<string, Uint8Array>;
 }
 
 type Block =
@@ -310,8 +318,66 @@ const FONT_SWITCHES: Record<string, Partial<Fmt> | "ignore"> = {
   huge: "ignore", Huge: "ignore", normalsize: "ignore",
 };
 
-function inline(text: string, ctx: Ctx, fmt: Fmt = {}): TextRun[] {
-  const runs: TextRun[] = [];
+/** Pixel size of a PNG or JPEG, read from its header (no decoding). */
+function imageSize(bytes: Uint8Array, type: "png" | "jpg"): { width: number; height: number } | null {
+  if (type === "png") {
+    if (bytes.length < 24) return null;
+    const dv = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    return { width: dv.getUint32(16), height: dv.getUint32(20) };
+  }
+  let i = 2;
+  while (i + 9 < bytes.length) {
+    if (bytes[i] !== 0xff) {
+      i++;
+      continue;
+    }
+    const marker = bytes[i + 1];
+    if (marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker)) {
+      return { height: (bytes[i + 5] << 8) | bytes[i + 6], width: (bytes[i + 7] << 8) | bytes[i + 8] };
+    }
+    i += 2 + ((bytes[i + 2] << 8) | bytes[i + 3]);
+  }
+  return null;
+}
+
+const MAX_IMAGE_PX = 500; // ≈ the A4 text width at 96 dpi
+
+/** Resolves an `\includegraphics` target against uploaded project images and returns an inline picture. */
+function embedImage(target: string, options: string, ctx: Ctx): ImageRun | null {
+  if (ctx.images.size === 0) return null;
+  const path = resolveProjectPath(target, [...ctx.images.keys()], ["png", "jpg", "jpeg"]);
+  if (!path) return null;
+  const ext = extname(path);
+  const type = ext === "png" ? "png" : ext === "jpg" || ext === "jpeg" ? "jpg" : null;
+  const data = ctx.images.get(path);
+  if (!type || !data) return null;
+  const size = imageSize(data, type);
+  if (!size || size.width === 0 || size.height === 0) return null;
+
+  // Honour width=0.6\linewidth / 8cm / 3in when given; otherwise fit the text width.
+  let widthPx = Math.min(size.width, MAX_IMAGE_PX);
+  const w = /width\s*=\s*([0-9.]+)\s*(\\(?:linewidth|textwidth|columnwidth)|cm|mm|in|pt)?/.exec(options);
+  if (w) {
+    const n = parseFloat(w[1]);
+    const unit = w[2] ?? "";
+    if (unit.startsWith("\\")) widthPx = n * MAX_IMAGE_PX;
+    else if (unit === "cm") widthPx = n * 37.8;
+    else if (unit === "mm") widthPx = n * 3.78;
+    else if (unit === "in") widthPx = n * 96;
+    else if (unit === "pt") widthPx = n * 1.333;
+    widthPx = Math.min(Math.max(widthPx, 24), MAX_IMAGE_PX);
+  }
+  const heightPx = widthPx * (size.height / size.width);
+  return new ImageRun({
+    type,
+    data,
+    transformation: { width: Math.round(widthPx), height: Math.round(heightPx) },
+    altText: { name: target, description: target, title: target },
+  });
+}
+
+function inline(text: string, ctx: Ctx, fmt: Fmt = {}): Run[] {
+  const runs: Run[] = [];
   let buf = "";
   const flush = () => {
     if (buf) {
@@ -512,8 +578,17 @@ function inline(text: string, ctx: Ctx, fmt: Fmt = {}): TextRun[] {
         if (o) k = skipSpaces(text, o.end);
         const g = readGroup(text, k);
         flush();
-        runs.push(mk(`[Image: ${g?.content ?? "figure"}]`, { ...fmt, italics: true }));
-        ctx.warnings.add("Images are replaced with “[Image: file]” placeholders.");
+        const image = g ? embedImage(g.content.trim(), o?.content ?? "", ctx) : null;
+        if (image) {
+          runs.push(image);
+        } else {
+          runs.push(mk(`[Image: ${g?.content ?? "figure"}]`, { ...fmt, italics: true }));
+          ctx.warnings.add(
+            ctx.images.size > 0
+              ? "Some figures couldn't be embedded (only PNG and JPG work in Word; PDF/EPS/SVG or missing files appear as “[Image: file]”)."
+              : "Images are replaced with “[Image: file]” placeholders."
+          );
+        }
         i = g ? g.end : j;
         continue;
       }
@@ -901,9 +976,22 @@ export interface DocxConversion {
   warnings: string[];
 }
 
-export function latexToDocx(source: string): DocxConversion {
+export interface DocxOptions {
+  /** Project images (path → bytes) that `\includegraphics` may embed. */
+  images?: Map<string, Uint8Array>;
+  /** Concatenated `.bib` text, used to build numbered references for `\bibliography{…}`. */
+  bibliography?: string;
+}
+
+export function latexToDocx(source: string, options: DocxOptions = {}): DocxConversion {
   const clean = stripComments(source);
-  const ctx: Ctx = { cites: new Map(), warnings: new Set(), counters: [0, 0, 0], orderedLists: 0 };
+  const ctx: Ctx = {
+    cites: new Map(),
+    warnings: new Set(),
+    counters: [0, 0, 0],
+    orderedLists: 0,
+    images: options.images ?? new Map(),
+  };
 
   const preamble = clean.includes("\\begin{document}") ? clean.slice(0, clean.indexOf("\\begin{document}")) : "";
   const title = extractCommand(preamble || clean, "title");
@@ -915,6 +1003,14 @@ export function latexToDocx(source: string): DocxConversion {
   if (bi !== -1) {
     const ei = clean.lastIndexOf("\\end{document}");
     body = clean.slice(bi + "\\begin{document}".length, ei === -1 ? undefined : ei);
+  }
+
+  if (options.bibliography) {
+    const expanded = expandBibliography(body, options.bibliography);
+    body = expanded.body;
+    if (expanded.missingKeys.length > 0) {
+      ctx.warnings.add(`Citation key(s) not found in your .bib: ${expanded.missingKeys.slice(0, 5).join(", ")}.`);
+    }
   }
 
   // Pre-scan bibliography so \cite{key} can resolve to its [n] number.
@@ -977,7 +1073,7 @@ export function latexToDocx(source: string): DocxConversion {
         break;
       }
       case "para": {
-        const runs: TextRun[] = [];
+        const runs: Run[] = [];
         if (b.lead) runs.push(...inline(b.lead, ctx, { bold: true }), mk(" ", {}));
         runs.push(...inline(b.text, ctx));
         children.push(
@@ -1018,7 +1114,7 @@ export function latexToDocx(source: string): DocxConversion {
         }
         for (const item of b.items) {
           const lines = item.text.split("\n").filter((l) => l.trim());
-          const runs: TextRun[] = [];
+          const runs: Run[] = [];
           if (item.term) runs.push(...inline(item.term, ctx, { bold: true }), mk(" ", {}));
           lines.forEach((line, idx) => {
             if (idx > 0) runs.push(new TextRun({ break: 1 }));
@@ -1199,8 +1295,11 @@ export function latexToDocx(source: string): DocxConversion {
   return { doc, warnings: [...ctx.warnings] };
 }
 
-export async function latexToDocxBlob(source: string): Promise<{ blob: Blob; warnings: string[] }> {
-  const { doc, warnings } = latexToDocx(source);
+export async function latexToDocxBlob(
+  source: string,
+  options: DocxOptions = {}
+): Promise<{ blob: Blob; warnings: string[] }> {
+  const { doc, warnings } = latexToDocx(source, options);
   const blob = await Packer.toBlob(doc);
   return { blob, warnings };
 }

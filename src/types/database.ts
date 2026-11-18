@@ -309,6 +309,44 @@ export interface Database {
           { foreignKeyName: "latex_documents_project_id_fkey"; columns: ["project_id"]; isOneToOne: true; referencedRelation: "projects"; referencedColumns: ["id"] }
         ];
       };
+      latex_files: {
+        Row: {
+          id: string;
+          project_id: string;
+          path: string;
+          kind: "text" | "binary";
+          content: string;
+          storage_path: string | null;
+          mime_type: string | null;
+          size_bytes: number;
+          updated_by: string | null;
+          created_at: string;
+          updated_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["latex_files"]["Row"]> & {
+          project_id: string;
+          path: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["latex_files"]["Row"]>;
+        Relationships: [
+          { foreignKeyName: "latex_files_project_id_fkey"; columns: ["project_id"]; isOneToOne: false; referencedRelation: "projects"; referencedColumns: ["id"] }
+        ];
+      };
+      latex_settings: {
+        Row: {
+          project_id: string;
+          main_file: string | null;
+          updated_by: string | null;
+          updated_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["latex_settings"]["Row"]> & {
+          project_id: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["latex_settings"]["Row"]>;
+        Relationships: [
+          { foreignKeyName: "latex_settings_project_id_fkey"; columns: ["project_id"]; isOneToOne: true; referencedRelation: "projects"; referencedColumns: ["id"] }
+        ];
+      };
       ai_generations: {
         Row: {
           id: string;

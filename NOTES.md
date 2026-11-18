@@ -6,8 +6,9 @@ simplest correct choice and document it rather than skip the feature.
 
 ## LaTeX editor (`/projects/[id]/latex`)
 
-A per-project LaTeX workspace: CodeMirror editor, live PDF preview, and
-downloads for `.tex`, `.pdf` and Word `.docx`.
+An Overleaf-style, per-project LaTeX workspace: a file tree (folders, `.tex`,
+`.bib`, `.sty`/`.cls`, figures), CodeMirror editor, live PDF preview, and
+downloads for the whole project `.zip`, `.pdf` and Word `.docx`.
 
 - **Compilation runs in the browser**, via `@siglum/engine` (TeX Live 2026
   as WebAssembly). Vercel functions have no TeX install, and in-browser
@@ -48,14 +49,67 @@ downloads for `.tex`, `.pdf` and Word `.docx`.
   become `[Image: file]` placeholders, and `\ref` can't be resolved; the UI
   lists exactly which simplifications were applied on each export. Anything
   needing full-fidelity conversion should be done with pandoc offline.
-- **Storage**: `latex_documents` (one row per project, RLS via
-  `is_project_member`) from `supabase/migrations/0002_latex_documents.sql`.
-  If the table doesn't exist yet the editor still works and shows the SQL to
-  run. Last-write-wins; there is no live co-editing (no Realtime on this
-  table), so two people editing at once will overwrite each other.
-- Verified in a real browser against **both** the dev server and the
-  minified production build (compile, error reporting with line numbers,
-  `.docx` download, 375px layout, dark mode).
+- **Multi-file projects** (migration `supabase/migrations/0003_latex_project_files.sql`,
+  which must be run once in the Supabase SQL Editor — the in-app notice shows the
+  SQL if it hasn't been):
+  - `latex_files` (one row per file; unique `(project_id, path)`; RLS via
+    `is_project_member`). Text files keep their content in the row; binaries
+    (images, PDFs, fonts) are stored in the **private `latex-assets` bucket**
+    under `<project_id>/<file_id>` with member-only Storage policies. Uploads go
+    **straight from the browser to Storage** under the user's own session (never
+    through a serverless function, so Vercel's 4.5 MB body limit doesn't apply).
+  - `latex_settings` holds the project's main document. If it's unset/missing the
+    editor auto-detects the `.tex` containing `\documentclass`.
+  - Limits: 25 MB per file, 60 MB per uploaded zip, 120 MB unzipped, 600 entries
+    (checked against the zip's central directory *before* inflating — zip-bomb safe).
+  - Upload accepts loose files, a folder, or a `.zip` (e.g. an Overleaf export). A
+    review step lists what is new vs. replaced; a single non-conflicting file
+    uploads immediately. Zip import strips a lone wrapper folder, skips
+    `__MACOSX`/dotfiles/build artefacts (`.aux .log .out .blg …`), rejects
+    path-traversal entries (`../x`), and auto-selects the main file.
+  - Everything is compiled together: the engine receives all other files as
+    `additionalFiles` plus `mainFile`, so `\input`, `\includegraphics{figures/a.png}`,
+    `\bibliography{refs}` and custom `.sty`/`.cls` resolve like on Overleaf. BibTeX
+    runs automatically.
+  - **Biber is not available** in the in-browser engine. Use classic
+    `\bibliography` + `.bib`, `biblatex` with `backend=bibtex`, or upload a
+    generated `.bbl`. The error message says so.
+  - **BibTeX warnings are non-fatal (patched).** BibTeX 4.03 exits non-zero on
+    mere *warnings* (a typo'd `\cite` key, a missing field), and the engine treats
+    any non-zero exit as fatal, so one bad key would abort with no PDF. The copy of
+    `worker.js` that `scripts/copy-siglum-worker.mjs` writes to `public/siglum/` is
+    patched so warnings-only runs continue (errors, a missing `.bib`, mixed
+    error+warning all stay fatal). `node_modules` is never modified; if the engine
+    is upgraded and the patch target disappears, the script warns loudly. The UI
+    then lists undefined citations/references under the PDF, Overleaf-style.
+  - Errors are mapped back to `file, line N` with a **Go to** button that opens the
+    file at that line; TeX's unhelpful "Emergency stop" is replaced by the first
+    real `!` error from the log (e.g. `File 'sections/x.tex' not found`).
+  - Autosave is per file (debounced 600 ms, serialised, retried on failure, flushed
+    on leave/`beforeunload`). **Last write wins** — there is no live co-editing
+    (no Realtime on these tables), so two people editing the same file at the same
+    time will overwrite each other. Renames/deletes by one person show up for
+    others after a reload.
+  - The older single-document table `latex_documents` (migration 0002) is no
+    longer written. If a project has text saved there, it seeds `main.tex` the
+    first time the new editor opens. If `latex_files` doesn't exist yet the editor
+    still works from an in-memory copy (nothing persists) and shows the SQL.
+- **`.docx` export** now flattens `\input`/`\include` from the main file, embeds
+  **PNG/JPG** figures (honouring `width=0.6\linewidth`, `8cm`, …), and builds
+  numbered references from the project's `.bib` (in citation order) when the
+  document uses `\bibliography{…}`. PDF/EPS/SVG figures, missing figures and `\ref`
+  are still simplified, and each export reports exactly which.
+- **Verification status.** Verified in a real browser on both the dev server and the
+  minified production build, using a hand-built Overleaf-style zip (wrapper folder,
+  junk entries, a `../evil.tex` entry, 2 figures, `.bib`, a `\input`): import review,
+  compile (real BibTeX numbering, `\ref` and `\input` resolved, both figures embedded
+  in the PDF — checked by extracting the PDF's text/image objects), undefined-citation
+  and missing-figure/`\input` errors, Go-to-line, rename/delete/set-main/new file,
+  zip + docx export (PNG byte-identical after upload→export), 375 px layout, light
+  and dark. That harness used the in-memory store. **The Supabase-backed store
+  (`SupabaseLatexStore`), the seeding in `page.tsx`, the Storage bucket and its
+  policies are type-checked but were not executed**, because they need migration
+  0003 applied and a signed-in session.
 
 ## Paper extraction: PDF upload + accuracy fixes
 
