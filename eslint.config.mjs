@@ -12,6 +12,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Vendored third-party worker copied from node_modules at build time
+    // (scripts/copy-siglum-worker.mjs) — not our code to lint.
+    "public/siglum/**",
   ]),
 ]);
 

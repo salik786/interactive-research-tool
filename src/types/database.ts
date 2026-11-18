@@ -293,6 +293,22 @@ export interface Database {
         Update: Partial<Database["public"]["Tables"]["outline_sections"]["Row"]>;
         Relationships: [];
       };
+      latex_documents: {
+        Row: {
+          id: string;
+          project_id: string;
+          content: string;
+          updated_by: string | null;
+          updated_at: string;
+        };
+        Insert: Partial<Database["public"]["Tables"]["latex_documents"]["Row"]> & {
+          project_id: string;
+        };
+        Update: Partial<Database["public"]["Tables"]["latex_documents"]["Row"]>;
+        Relationships: [
+          { foreignKeyName: "latex_documents_project_id_fkey"; columns: ["project_id"]; isOneToOne: true; referencedRelation: "projects"; referencedColumns: ["id"] }
+        ];
+      };
       ai_generations: {
         Row: {
           id: string;

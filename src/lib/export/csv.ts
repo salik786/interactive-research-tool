@@ -12,7 +12,11 @@ export function toCsv(rows: Record<string, unknown>[], columns?: string[]): stri
 }
 
 export function downloadFile(filename: string, content: string, mimeType: string) {
-  const blob = new Blob([content], { type: mimeType });
+  downloadBlob(filename, new Blob([content], { type: mimeType }));
+}
+
+/** Triggers a browser download for any Blob (text, PDF, DOCX, …). */
+export function downloadBlob(filename: string, blob: Blob) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;

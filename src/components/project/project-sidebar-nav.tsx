@@ -11,6 +11,7 @@ import {
   GitBranch,
   Layers,
   PenLine,
+  FileCode2,
   Settings,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -24,6 +25,7 @@ const NAV_ITEMS = [
   { href: "prisma-flow", label: "PRISMA flow", icon: GitBranch },
   { href: "themes", label: "Themes", icon: Layers },
   { href: "outline", label: "Outline", icon: PenLine },
+  { href: "latex", label: "LaTeX", icon: FileCode2 },
   { href: "settings", label: "Settings", icon: Settings },
 ];
 

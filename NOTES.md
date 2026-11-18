@@ -4,6 +4,59 @@ This file records decisions made where the spec left something unspecified,
 plus known gaps, per the build brief's instruction to default to the
 simplest correct choice and document it rather than skip the feature.
 
+## LaTeX editor (`/projects/[id]/latex`)
+
+A per-project LaTeX workspace: CodeMirror editor, live PDF preview, and
+downloads for `.tex`, `.pdf` and Word `.docx`.
+
+- **Compilation runs in the browser**, via `@siglum/engine` (TeX Live 2026
+  as WebAssembly). Vercel functions have no TeX install, and in-browser
+  compiling also means unpublished drafts are never uploaded. The first
+  compile downloads the engine (~32 MB WASM + a few MB of bundles, cached
+  in the browser afterwards); later compiles take ~1–3 s.
+- **Third-party runtime dependency**: the WASM and TeX bundles are fetched
+  from `https://packages.siglum.org` (SHA-256 verified against a manifest by
+  the SDK). Only package files are fetched — never the document. If that
+  host ever goes away, point `NEXT_PUBLIC_LATEX_RUNTIME_URL` at a
+  self-hosted copy (see the Siglum self-hosting guide). (SwiftLaTeX was
+  rejected for exactly this reason: its package server no longer resolves.)
+- `scripts/copy-siglum-worker.mjs` (run by `predev`/`prebuild`) copies the
+  engine's `worker.js` into `public/siglum/` so it is a plain static file.
+  It must match the installed engine version, so it is generated, not
+  committed. `/siglum/` is excluded from the auth proxy matcher — otherwise
+  the worker URL is redirected to the login page (HTML), which surfaces as
+  `Unexpected token '<'` inside the worker.
+- **`blake3-wasm` is aliased to a stub** (`next.config.ts` →
+  `src/lib/latex/blake3-disabled.ts`). Turbopack can't bundle its wasm ESM
+  integration, and the engine only uses it as an optional speed-up with a
+  built-in DJB2 fallback. Because that fallback hash is 32-bit, the engine's
+  compiled-document cache is turned off (`enableDocCache: false`) so a hash
+  collision can never show a stale PDF.
+- **Fonts**: the generated template uses `\usepackage{lmodern}` after
+  `[T1]{fontenc}`. Plain T1 Computer Modern needs the 60 MB `cm-super`
+  bundle and fails with `Font ecti1095 ... not found`; the UI explains this
+  if a pasted document hits it.
+- **Starter document** is generated from the project's outline sections,
+  theme syntheses and kept papers (bibliography via `thebibliography`, so no
+  BibTeX run is needed). All text is LaTeX-escaped, including Unicode like
+  `≥`, `α`, `±` that pdfLaTeX's `inputenc` doesn't cover.
+- **.docx export is a custom converter** (`src/lib/latex/to-docx.ts`), not
+  pandoc (which can't run on Vercel or be shipped to the browser). It
+  handles title/author/date, abstract, numbered sections, bold/italic/
+  monospace, lists, `\cite` → `[n]` matched to the bibliography, tables,
+  accents and the bibliography. Math is flattened to readable text, images
+  become `[Image: file]` placeholders, and `\ref` can't be resolved; the UI
+  lists exactly which simplifications were applied on each export. Anything
+  needing full-fidelity conversion should be done with pandoc offline.
+- **Storage**: `latex_documents` (one row per project, RLS via
+  `is_project_member`) from `supabase/migrations/0002_latex_documents.sql`.
+  If the table doesn't exist yet the editor still works and shows the SQL to
+  run. Last-write-wins; there is no live co-editing (no Realtime on this
+  table), so two people editing at once will overwrite each other.
+- Verified in a real browser against **both** the dev server and the
+  minified production build (compile, error reporting with line numbers,
+  `.docx` download, 375px layout, dark mode).
+
 ## Paper extraction: PDF upload + accuracy fixes
 
 `POST /api/ai/extract-paper` originally only accepted a pasted abstract,
